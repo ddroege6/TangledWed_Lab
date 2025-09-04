@@ -1,0 +1,62 @@
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+
+# --- Editors/IDEs ---
+.vscode/
+.idea/
+*.iml
+*.swp
+.swp
+*~
+
+# --- Node/JS (root or inside subfolders) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# If you add env files for local testing:
+.env
+.env.*
+app/.env
+app/.env.*
+
+# --- App build outputs (if any) ---
+dist/
+build/
+coverage/
+
+# --- Our local DAST/scan reports & artifacts ---
+reports/
+semgrep.json
+trivy.json
+sbom-*.json
+gitleaks.json
+zap-baseline.*
+checkov*.json
+*.sarif
+
+# --- Docker / misc archives ---
+*.pid
+*.pid.lock
+*.tar.gz
+trivy.tar.gz
+
+# --- Terraform (keep your state & secrets out of git) ---
+infra/.terraform/
+infra/.terraform/*
+infra/.terraform.lock.hcl
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/*crash*.log
+infra/*.tfvars
+terraform.tfvars
+*.tfplan
+override.tf
+override.tf.json
+
+# --- Python virtualenvs (if you use them for tools) ---
+venv/
+.venv/
