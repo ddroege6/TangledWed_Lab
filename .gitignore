@@ -30,8 +30,8 @@ coverage/
 
 # --- Security scan reports and artifacts ---
 reports/                 # all ZAP, DAST reports
-*.html                   # any HTML reports generated locally
-*.xml                    # XML exports
+reports/**/*.html
+reports/**/*.xml
 semgrep.json
 trivy.json
 sbom-*.json
@@ -39,6 +39,7 @@ gitleaks.json
 zap-baseline.*
 checkov*.json
 *.sarif                  # static analysis formats
+
 
 
 # --- Docker / misc archives ---
@@ -50,10 +51,9 @@ trivy.tar.gz
 # --- Terraform (keep your state & secrets out of git) ---
 infra/.terraform/
 infra/.terraform/*
-infra/.terraform.lock.hcl
 infra/*.tfstate
 infra/*.tfstate.backup
-infra/*crash*.log
+*crash*.log
 infra/*.tfvars
 terraform.tfvars
 *.tfplan
