@@ -1,0 +1,42 @@
+name: Main CI Pipeline
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gitleaks:
+    name: Secret Scanning (Gitleaks)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history for scanning)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Gitleaks
+        run: |
+          GL_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep tag_name | cut -d '"' -f 4)
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz -o gitleaks.tar.gz
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run Gitleaks (fail on leaks)
+        run: |
+          gitleaks detect \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path gitleaks.json \
+            --report-format sarif \
+            --report-path gitleaks.sarif
+
+      - name: Upload reports as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-reports
+          path: |
+            gitleaks.json
+            gitleaks.sarif
