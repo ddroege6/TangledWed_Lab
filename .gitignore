@@ -28,6 +28,11 @@ dist/
 build/
 coverage/
 
+# logs
+build.log
+logs/
+*.log
+
 # --- Security scan reports and artifacts ---
 reports/                 # all ZAP, DAST reports
 reports/**/*.html
@@ -39,8 +44,6 @@ gitleaks.json
 zap-baseline.*
 checkov*.json
 *.sarif                  # static analysis formats
-
-
 
 # --- Docker / misc archives ---
 *.pid
