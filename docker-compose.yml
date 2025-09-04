@@ -1,0 +1,17 @@
+services:
+  app:
+    image: bkimminich/juice-shop:latest
+    ports: ["3000:3000"]
+
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    depends_on: [app]
+    working_dir: /zap/wrk              # <— key fix
+    volumes:
+      - ./reports:/zap/wrk             # host ./reports ⇄ container /zap/wrk
+    entrypoint: >
+      sh -c "sleep 12 && /zap/zap-baseline.py
+      -t http://app:3000
+      -m 3
+      -r zap-baseline.html             # <— write to CWD
+      -x zap-baseline.xml || true"     # <— write to CWD

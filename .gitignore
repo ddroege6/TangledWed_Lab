@@ -28,15 +28,18 @@ dist/
 build/
 coverage/
 
-# --- Our local DAST/scan reports & artifacts ---
-reports/
+# --- Security scan reports and artifacts ---
+reports/                 # all ZAP, DAST reports
+*.html                   # any HTML reports generated locally
+*.xml                    # XML exports
 semgrep.json
 trivy.json
 sbom-*.json
 gitleaks.json
 zap-baseline.*
 checkov*.json
-*.sarif
+*.sarif                  # static analysis formats
+
 
 # --- Docker / misc archives ---
 *.pid
