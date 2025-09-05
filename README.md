@@ -14,7 +14,7 @@
 A DevSecOps lab project that demonstrates **secure CI/CD pipelines**, **infrastructure-as-code**, and **runtime security testing** using a deliberately vulnerable app (OWASP Juice Shop).
 
 
-<img width="1024" height="1024" alt="Image" src="https://github.com/user-attachments/assets/c766d02c-4da5-4fab-989a-4d07c03e0618" />
+<img width="666" height="1024" alt="Image" src="https://github.com/user-attachments/assets/c766d02c-4da5-4fab-989a-4d07c03e0618" />
 
 ---
 
