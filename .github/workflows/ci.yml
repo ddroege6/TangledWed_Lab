@@ -32,13 +32,13 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y jq curl tar
 
-      - name: Install Gitleaks
+      - name: Install Gitleaks (with fallback)
         run: |
           set -e
-          GL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${GL}/gitleaks_${GL#v}_linux_x64.tar.gz" -o gl.tgz
+          GL=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name || echo "v8.28.0")
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/${GL}/gitleaks_${GL#v}_linux_x64.tar.gz" -o gl.tgz
           tar -xzf gl.tgz gitleaks
-          sudo mv gitleaks /usr/local/bin/gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
       - id: scan
@@ -46,11 +46,25 @@ jobs:
         run: |
           set +e
           mkdir -p reports
-          gitleaks detect --no-banner --no-git --redact \
-            --config .gitleaks.toml \
+          # Pre-create placeholders so the upload step always finds files
+          echo '{}' > reports/gitleaks.json
+          printf '{ "version":"2.1.0", "runs":[] }' > reports/gitleaks.sarif
+
+          CMD="gitleaks detect --no-banner --no-git --redact \
             --report-format json  --report-path reports/gitleaks.json \
-            --report-format sarif --report-path reports/gitleaks.sarif
-          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+            --report-format sarif --report-path reports/gitleaks.sarif"
+
+          # Use local config if present
+          if [ -f ".gitleaks.toml" ]; then
+            CMD="$CMD --config .gitleaks.toml"
+          fi
+
+          echo "Running: $CMD"
+          eval "$CMD"
+          status=$?
+
+          echo "exitcode=$status" >> "$GITHUB_OUTPUT"
+          # Do not fail here; we want to upload first
           exit 0
 
       - name: Upload gitleaks reports (only)
@@ -61,7 +75,7 @@ jobs:
           path: |
             reports/gitleaks.json
             reports/gitleaks.sarif
-          if-no-files-found: error
+          if-no-files-found: ignore
 
       - name: Fail if leaks found
         if: steps.scan.outputs.exitcode != '0'
