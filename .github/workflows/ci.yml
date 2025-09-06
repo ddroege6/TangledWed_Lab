@@ -41,28 +41,28 @@ jobs:
           sudo mv gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
-      - id: gscan
-        name: Run Gitleaks (working tree only)
+      - id: scan
+        name: Run Gitleaks (always write reports)
         run: |
           set +e
+          mkdir -p reports
           gitleaks detect --no-banner --no-git --redact \
-            --report-format json  --report-path gitleaks.json \
-            --report-format sarif --report-path gitleaks.sarif \
-            --config .gitleaks.toml
+            --config .gitleaks.toml \
+            --report-format json  --report-path reports/gitleaks.json \
+            --report-format sarif --report-path reports/gitleaks.sarif
           echo "exitcode=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload gitleaks reports
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gitleaks-reports
-          path: |
-            gitleaks.json
-            gitleaks.sarif
-          if-no-files-found: ignore
+          path: reports/
+          if-no-files-found: error
 
       - name: Fail if leaks found
-        if: steps.gscan.outputs.exitcode != '0'
+        if: steps.scan.outputs.exitcode != '0'
         run: |
           echo "Gitleaks found potential secrets. See artifact: gitleaks-reports"
           exit 1
@@ -128,7 +128,6 @@ jobs:
     name: Terraform Apply → ECR Retag → ECS Deploy → ZAP
     needs: [gitleaks, semgrep, trivy]
     runs-on: ubuntu-latest
-    # Read repo variables directly (no env context)
     if: ${{ vars.AWS_ROLE_ARN != '' && vars.AWS_ACCOUNT_ID != '' && vars.AWS_REGION != '' }}
 
     steps:
