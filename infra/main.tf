@@ -7,7 +7,7 @@ terraform {
 provider "aws" { region = var.region }
 
 locals {
-  name        = "${var.project_name}-${var.environment}"
+  name = "${var.project_name}-${var.environment}"
   tags = { Project = var.project_name, Environment = var.environment, Owner = var.owner }
 }
 

@@ -1,7 +1,7 @@
 resource "aws_vpc" "vpc" {
   cidr_block           = "10.80.0.0/16"
   enable_dns_hostnames = true
-  tags = merge(local.tags, { Name = "${local.name}-vpc" })
+  tags                 = merge(local.tags, { Name = "${local.name}-vpc" })
 }
 
 resource "aws_internet_gateway" "igw" {
@@ -10,31 +10,31 @@ resource "aws_internet_gateway" "igw" {
 }
 
 resource "aws_subnet" "public_a" {
-  vpc_id = aws_vpc.vpc.id
-  cidr_block = "10.80.0.0/24"
-  availability_zone = data.aws_availability_zones.azs.names[0]
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.80.0.0/24"
+  availability_zone       = data.aws_availability_zones.azs.names[0]
   map_public_ip_on_launch = true
-  tags = merge(local.tags, { Name = "${local.name}-public-a" })
+  tags                    = merge(local.tags, { Name = "${local.name}-public-a" })
 }
 resource "aws_subnet" "public_b" {
-  vpc_id = aws_vpc.vpc.id
-  cidr_block = "10.80.1.0/24"
-  availability_zone = data.aws_availability_zones.azs.names[1]
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.80.1.0/24"
+  availability_zone       = data.aws_availability_zones.azs.names[1]
   map_public_ip_on_launch = true
-  tags = merge(local.tags, { Name = "${local.name}-public-b" })
+  tags                    = merge(local.tags, { Name = "${local.name}-public-b" })
 }
 
 resource "aws_subnet" "private_a" {
-  vpc_id = aws_vpc.vpc.id
-  cidr_block = "10.80.10.0/24"
+  vpc_id            = aws_vpc.vpc.id
+  cidr_block        = "10.80.10.0/24"
   availability_zone = data.aws_availability_zones.azs.names[0]
-  tags = merge(local.tags, { Name = "${local.name}-private-a" })
+  tags              = merge(local.tags, { Name = "${local.name}-private-a" })
 }
 resource "aws_subnet" "private_b" {
-  vpc_id = aws_vpc.vpc.id
-  cidr_block = "10.80.11.0/24"
+  vpc_id            = aws_vpc.vpc.id
+  cidr_block        = "10.80.11.0/24"
   availability_zone = data.aws_availability_zones.azs.names[1]
-  tags = merge(local.tags, { Name = "${local.name}-private-b" })
+  tags              = merge(local.tags, { Name = "${local.name}-private-b" })
 }
 
 resource "aws_route_table" "public" {
