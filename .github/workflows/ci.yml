@@ -13,7 +13,6 @@ permissions:
   contents: read
   security-events: write
 
-# keep only static stuff here
 env:
   TF_DIR: infra
   ECR_REPO_NAME: tangled-web-lab-dev-app
@@ -24,17 +23,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 1 }  # avoid history noise
+        with:
+          fetch-depth: 1
+
+      - name: Install prerequisites
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y jq curl tar
 
       - name: Install Gitleaks
         run: |
           set -e
           GL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/$GL/gitleaks_${GL#v}_linux_x64.tar.gz -o gl.tgz
-          tar -xzf gl.tgz gitleaks && sudo mv gitleaks /usr/local/bin/
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/${GL}/gitleaks_${GL#v}_linux_x64.tar.gz" -o gl.tgz
+          tar -xzf gl.tgz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
-      - id: scan
+      - id: gscan
         name: Run Gitleaks (working tree only)
         run: |
           set +e
@@ -42,8 +49,7 @@ jobs:
             --report-format json  --report-path gitleaks.json \
             --report-format sarif --report-path gitleaks.sarif \
             --config .gitleaks.toml
-          echo "exitcode=$?" >> $GITHUB_OUTPUT
-          # never stop this job here; we want to upload the report
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
           exit 0
 
       - uses: actions/upload-artifact@v4
@@ -55,20 +61,21 @@ jobs:
             gitleaks.sarif
           if-no-files-found: ignore
 
-      # Fail after upload if leaks were found
       - name: Fail if leaks found
-        if: steps.scan.outputs.exitcode != '0'
+        if: steps.gscan.outputs.exitcode != '0'
         run: |
           echo "Gitleaks found potential secrets. See artifact: gitleaks-reports"
           exit 1
-
 
   semgrep:
     name: SAST (Semgrep) — report only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0, submodules: recursive }
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
       - name: Run Semgrep (OWASP Top 10)
         run: |
           python3 -m pip install --upgrade pip
@@ -78,39 +85,50 @@ jobs:
           else
             echo "{}" > semgrep.json
           fi
+
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: semgrep.json, path: semgrep.json }
+        with:
+          name: semgrep.json
+          path: semgrep.json
 
   trivy:
     name: Image Scan + SBOM — report only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Trivy (robust)
+
+      - name: Install Trivy
         run: |
           set -e
           curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
             | sh -s -- -b /usr/local/bin
           trivy --version
+
       - name: Scan Docker Hub image
         run: |
           set -e
           IMG=bkimminich/juice-shop:latest
-          trivy image --severity HIGH,CRITICAL --exit-code 0 --format json --output trivy.json $IMG
-          trivy image --format spdx-json --output sbom-spdx.json $IMG
+          trivy image --severity HIGH,CRITICAL --exit-code 0 --format json --output trivy.json "$IMG"
+          trivy image --format spdx-json --output sbom-spdx.json "$IMG"
+
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: trivy.json, path: trivy.json }
+        with:
+          name: trivy.json
+          path: trivy.json
+
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: sbom-spdx.json, path: sbom-spdx.json }
+        with:
+          name: sbom-spdx.json
+          path: sbom-spdx.json
 
   deploy:
     name: Terraform Apply → ECR Retag → ECS Deploy → ZAP
     needs: [gitleaks, semgrep, trivy]
     runs-on: ubuntu-latest
-    # Use vars.* directly so the linter is happy
+    # Read repo variables directly (no env context)
     if: ${{ vars.AWS_ROLE_ARN != '' && vars.AWS_ACCOUNT_ID != '' && vars.AWS_REGION != '' }}
 
     steps:
@@ -124,7 +142,8 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: 1.9.5 }
+        with:
+          terraform_version: 1.9.5
 
       - name: Terraform init/apply (DockerHub image for first boot)
         working-directory: ${{ env.TF_DIR }}
@@ -139,8 +158,8 @@ jobs:
       - name: Ensure ECR repo exists & login
         run: |
           set -e
-          AWS_ACCOUNT_ID=${{ vars.AWS_ACCOUNT_ID }}
-          AWS_REGION=${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          AWS_REGION="${{ vars.AWS_REGION }}"
           aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" >/dev/null 2>&1 || \
             aws ecr create-repository --repository-name "$ECR_REPO_NAME"
           aws ecr get-login-password | docker login --username AWS --password-stdin \
@@ -149,14 +168,14 @@ jobs:
       - name: Pull, retag, push to ECR
         run: |
           set -e
-          AWS_ACCOUNT_ID=${{ vars.AWS_ACCOUNT_ID }}
-          AWS_REGION=${{ vars.AWS_REGION }}
+          AWS_ACCOUNT_ID="${{ vars.AWS_ACCOUNT_ID }}"
+          AWS_REGION="${{ vars.AWS_REGION }}"
           SRC=bkimminich/juice-shop:latest
-          DST=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${{ github.sha }}
+          DST="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO_NAME}:${{ github.sha }}"
           docker pull "$SRC"
           docker tag  "$SRC" "$DST"
           docker push "$DST"
-          echo "ECR_IMAGE=$DST" >> $GITHUB_ENV
+          echo "ECR_IMAGE=$DST" >> "$GITHUB_ENV"
 
       - name: Re-apply Terraform with ECR image (updates ECS service)
         working-directory: ${{ env.TF_DIR }}
@@ -171,7 +190,7 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           set -e
-          echo "alb=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+          echo "alb=$(terraform output -raw alb_dns_name)" >> "$GITHUB_OUTPUT"
 
       - name: ZAP Baseline against ALB
         run: |
@@ -180,5 +199,8 @@ jobs:
           docker run --rm -t -v "$PWD:/zap/wrk" ghcr.io/zaproxy/zaproxy:stable \
             /zap/zap-baseline.py -t "$URL" -m 3 -r zap-baseline.html -x zap-baseline.xml || true
           ls -l
+
       - uses: actions/upload-artifact@v4
-        with: { name: zap-baseline, path: "zap-baseline.*" }
+        with:
+          name: zap-baseline
+          path: zap-baseline.*
