@@ -1,14 +1,3 @@
-
-
-**Polish**
-
-   * Architecture diagram (draw\.io/Excalidraw/Whimsical)
-   * Optional AI sidecar screenshot (if you include Ollama/OpenWebUI)
-
-
-
-
-
 # 🛡️ Tangled Web Lab
 
 A DevSecOps lab project that demonstrates **secure CI/CD pipelines**, **infrastructure-as-code**, and **runtime security testing** using a deliberately vulnerable app (OWASP Juice Shop).
@@ -40,8 +29,10 @@ This lab is designed to **showcase security best practices** for cloud workloads
 ## 📸 Screenshots (Evidence)
 
 ### Local Lab
-- [ ] Juice Shop homepage (`localhost:3000`)
-- [ ] ZAP baseline report (HTML)
+<img width="2557" height="1405" alt="Image" src="https://github.com/user-attachments/assets/ff236a1a-0be4-4716-b7bb-1f344d8b6103" />
+Juice Shop homepage (`localhost:3000`)
+<img width="2550" height="1402" alt="Image" src="https://github.com/user-attachments/assets/bb9fbf06-4559-4f65-afda-24b711ee4c58" />
+ZAP baseline report (HTML)
 - [ ] Docker Desktop with containers
 
 ### GitHub Actions

@@ -42,29 +42,34 @@ jobs:
           gitleaks version
 
       - id: scan
-        name: Run Gitleaks (always write reports)
+        name: Run Gitleaks (JSON + SARIF, always upload)
         run: |
           set +e
           mkdir -p reports
-          # Pre-create placeholders so the upload step always finds files
+          # Placeholders so upload never fails
           echo '{}' > reports/gitleaks.json
           printf '{ "version":"2.1.0", "runs":[] }' > reports/gitleaks.sarif
 
-          CMD="gitleaks detect --no-banner --no-git --redact \
-            --report-format json  --report-path reports/gitleaks.json \
-            --report-format sarif --report-path reports/gitleaks.sarif"
-
-          # Use local config if present
+          BASE="gitleaks detect --no-banner --no-git --redact"
           if [ -f ".gitleaks.toml" ]; then
-            CMD="$CMD --config .gitleaks.toml"
+            BASE="$BASE --config .gitleaks.toml"
           fi
 
-          echo "Running: $CMD"
-          eval "$CMD"
-          status=$?
+          echo "Running JSON scan…"
+          eval "$BASE --report-format=json  --report-path reports/gitleaks.json"
+          status_json=$?
 
+          echo "Running SARIF scan…"
+          eval "$BASE --report-format=sarif --report-path reports/gitleaks.sarif"
+          status_sarif=$?
+
+          # If either run found leaks (1) or errored (2), mark as non-zero
+          if [ "$status_json" -ne 0 ] || [ "$status_sarif" -ne 0 ]; then
+            status=1
+          else
+            status=0
+          fi
           echo "exitcode=$status" >> "$GITHUB_OUTPUT"
-          # Do not fail here; we want to upload first
           exit 0
 
       - name: Upload gitleaks reports (only)
@@ -80,7 +85,7 @@ jobs:
       - name: Fail if leaks found
         if: steps.scan.outputs.exitcode != '0'
         run: |
-          echo "Gitleaks found potential secrets. See artifact: gitleaks-reports"
+          echo "Gitleaks found potential secrets or scan error. See artifact: gitleaks-reports"
           exit 1
 
   semgrep:
