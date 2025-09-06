@@ -1,42 +1,154 @@
-name: Main CI Pipeline
+name: Main CI/CD
 
 on:
   push:
   pull_request:
 
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+env:
+  AWS_REGION: us-east-1
+  TF_DIR: infra
+  ECR_REPO_NAME: tangled-web-lab-dev-app
+
 jobs:
   gitleaks:
-    name: Secret Scanning (Gitleaks)
+    name: Secret Scanning (fail-fast)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Install Gitleaks
+        run: |
+          GL=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/$GL/gitleaks_${GL#v}_linux_x64.tar.gz -o gl.tgz
+          tar -xzf gl.tgz gitleaks && sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+      - name: Run Gitleaks (fail on leaks)
+        run: |
+          gitleaks detect --no-banner --redact \
+            --report-format json --report-path gitleaks.json \
+            --report-format sarif --report-path gitleaks.sarif
+      - uses: actions/upload-artifact@v4
+        with: { name: gitleaks-reports, path: "gitleaks.*" }
+
+  semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, submodules: recursive }
+      - run: |
+          python3 -m pip install --upgrade pip
+          pip3 install semgrep
+          if [ -d "app" ]; then
+            semgrep --config p/owasp-top-ten --error --json -o semgrep.json app
+          else
+            echo "No app/ directory; skipping Semgrep."
+            echo "{}" > semgrep.json
+          fi
+      - uses: actions/upload-artifact@v4
+        with: { name: semgrep.json, path: semgrep.json }
+
+  trivy:
+    name: Image Scan + SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -L https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.55.0_Linux-64bit.tar.gz -o trivy.tgz
+          tar -xzf trivy.tgz trivy && sudo mv trivy /usr/local/bin/
+          trivy --version
+      - name: Scan Docker Hub image
+        run: |
+          IMG=bkimminich/juice-shop:latest
+          trivy image --severity HIGH,CRITICAL --exit-code 0 --format json --output trivy.json $IMG
+          trivy image --format spdx-json --output sbom-spdx.json $IMG
+      - uses: actions/upload-artifact@v4
+        with: { name: trivy, path: "trivy.json" }
+      - uses: actions/upload-artifact@v4
+        with: { name: sbom-spdx.json, path: "sbom-spdx.json" }
+
+  deploy:
+    name: Terraform Apply → ECR Retag → ECS Deploy → ZAP
+    needs: [gitleaks, semgrep, trivy]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout (full history for scanning)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          fetch-depth: 0
+          role-to-assume: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/<YOUR_GITHUB_OIDC_ROLE>
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Download Gitleaks
+      - name: Install tools
         run: |
-          GL_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest | grep tag_name | cut -d '"' -f 4)
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/${GL_VERSION}/gitleaks_${GL_VERSION#v}_linux_x64.tar.gz -o gitleaks.tar.gz
-          tar -xzf gitleaks.tar.gz gitleaks
-          sudo mv gitleaks /usr/local/bin/gitleaks
-          gitleaks version
+          sudo apt-get update && sudo apt-get install -y jq unzip
+          curl -sLo /usr/local/bin/terraform https://releases.hashicorp.com/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip && echo "Use setup-terraform instead"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.9.5 }
 
-      - name: Run Gitleaks (fail on leaks)
+      - name: Terraform init/plan/apply
+        working-directory: ${{ env.TF_DIR }}
         run: |
-          gitleaks detect \
-            --no-banner \
-            --redact \
-            --report-format json \
-            --report-path gitleaks.json \
-            --report-format sarif \
-            --report-path gitleaks.sarif
+          terraform init -input=false
+          terraform workspace select dev || terraform workspace new dev
+          terraform apply -auto-approve \
+            -var="region=${{ env.AWS_REGION }}" \
+            -var="image_uri=bkimminich/juice-shop:latest"
 
-      - name: Upload reports as artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitleaks-reports
-          path: |
-            gitleaks.json
-            gitleaks.sarif
+      - name: Create ECR repo if absent & login
+        run: |
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT=$ACC" >> $GITHUB_ENV
+          aws ecr describe-repositories --repository-names ${{ env.ECR_REPO_NAME }} >/dev/null 2>&1 || \
+            aws ecr create-repository --repository-name ${{ env.ECR_REPO_NAME }}
+          aws ecr get-login-password | docker login --username AWS --password-stdin ${ACC}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+      - name: Retag Docker Hub image into ECR
+        run: |
+          ACC=${{ env.ACCOUNT }}
+        shell: bash
+
+      - name: Pull, retag, push
+        run: |
+          ACC=$ACCOUNT
+          SRC=bkimminich/juice-shop:latest
+          DST=${ACC}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_NAME }}:${{ github.sha }}
+          docker pull $SRC
+          docker tag  $SRC $DST
+          docker push $DST
+        env:
+          ACCOUNT: ${{ env.ACCOUNT }}
+
+      - name: Update ECS task to new ECR image
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          # Re-apply with image_uri set to ECR tag (simplest, IaC-driven)
+          ACC=$(aws sts get-caller-identity --query Account --output text)
+          IMG="${ACC}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPO_NAME }}:${{ github.sha }}"
+          terraform apply -auto-approve \
+            -var="region=${{ env.AWS_REGION }}" \
+            -var="image_uri=$IMG"
+
+      - name: Get ALB DNS
+        id: tfout
+        working-directory: ${{ env.TF_DIR }}
+        run: echo "alb=$(terraform output -raw alb_dns_name)" >> $GITHUB_OUTPUT
+
+      - name: ZAP Baseline against ALB
+        run: |
+          URL="http://${{ steps.tfout.outputs.alb }}"
+          docker run --rm -t -v "$PWD:/zap/wrk" ghcr.io/zaproxy/zaproxy:stable \
+            /zap/zap-baseline.py -t "$URL" -m 3 -r zap-baseline.html -x zap-baseline.xml || true
+          ls -l
+      - uses: actions/upload-artifact@v4
+        with: { name: zap-baseline, path: "zap-baseline.*" }
+
+        
