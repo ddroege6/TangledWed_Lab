@@ -24,7 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 1 }
+        with: { fetch-depth: 1 }  # avoid history noise
+
       - name: Install Gitleaks
         run: |
           set -e
@@ -32,15 +33,35 @@ jobs:
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/$GL/gitleaks_${GL#v}_linux_x64.tar.gz -o gl.tgz
           tar -xzf gl.tgz gitleaks && sudo mv gitleaks /usr/local/bin/
           gitleaks version
-      - name: Run Gitleaks (working tree only, fail on leaks)
+
+      - id: scan
+        name: Run Gitleaks (working tree only)
         run: |
-          set -e
+          set +e
           gitleaks detect --no-banner --no-git --redact \
             --report-format json  --report-path gitleaks.json \
             --report-format sarif --report-path gitleaks.sarif \
-            --config .gitleaks.toml || exit 1
+            --config .gitleaks.toml
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+          # never stop this job here; we want to upload the report
+          exit 0
+
       - uses: actions/upload-artifact@v4
-        with: { name: gitleaks-reports, path: "gitleaks.*" }
+        if: always()
+        with:
+          name: gitleaks-reports
+          path: |
+            gitleaks.json
+            gitleaks.sarif
+          if-no-files-found: ignore
+
+      # Fail after upload if leaks were found
+      - name: Fail if leaks found
+        if: steps.scan.outputs.exitcode != '0'
+        run: |
+          echo "Gitleaks found potential secrets. See artifact: gitleaks-reports"
+          exit 1
+
 
   semgrep:
     name: SAST (Semgrep) — report only
