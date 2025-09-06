@@ -1,0 +1,10 @@
+title = "TangledWeb Lab Gitleaks Config"
+
+[allowlist]
+  description = "Ignore demo/vendor and generated content"
+  files = [
+    '''^app/''',
+    '''^reports/''',
+    '''^ScreenshotsandVideos/''',
+    '''\.log$'''
+  ]
