@@ -11,8 +11,9 @@ concurrency:
 permissions:
   id-token: write
   contents: read
-  security-events: write
   actions: read
+  # We are NOT uploading SARIF to Code Scanning (artifacts only)
+  # security-events: write
 
 env:
   TF_DIR: infra
@@ -20,8 +21,10 @@ env:
   TERRAFORM_VERSION: 1.9.5
   TARGET_IMAGE: bkimminich/juice-shop:latest
 
+# =========================
+# 1) SECURITY SCANS (matrix)
+# =========================
 jobs:
-  # Parallel security scanning for faster feedback
   security-scans:
     name: Security Scans
     runs-on: ubuntu-latest
@@ -30,135 +33,152 @@ jobs:
       matrix:
         scanner:
           - name: gitleaks
-            upload_sarif: true
           - name: semgrep
-            upload_sarif: false
           - name: trivy
-            upload_sarif: true
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      # -------- GITLEAKS --------
       - name: Run Gitleaks
         if: matrix.scanner.name == 'gitleaks'
         uses: gitleaks/gitleaks-action@v2
+        with:
+          args: >
+            detect --no-git --redact
+            --report-format sarif
+            --report-path gitleaks.sarif
+          config-path: .gitleaks.toml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          config-path: .gitleaks.toml
         continue-on-error: true
 
+      - name: Upload Gitleaks artifact
+        if: matrix.scanner.name == 'gitleaks' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results
+          path: gitleaks.sarif
+          if-no-files-found: ignore
+
+      # -------- SEMGREP --------
       - name: Run Semgrep
         if: matrix.scanner.name == 'semgrep'
         uses: semgrep/semgrep-action@v1
         with:
           config: p/owasp-top-ten
-          generateSarif: "1"
+          generateSarif: "1"     # produces semgrep.sarif
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
         continue-on-error: true
 
-      - name: Run Trivy vulnerability scanner
+      - name: Upload Semgrep artifacts
+        if: matrix.scanner.name == 'semgrep' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: |
+            semgrep.sarif
+            semgrep.json
+          if-no-files-found: ignore
+
+      # -------- TRIVY (IMAGE) --------
+      - name: Set up Trivy cache
+        if: matrix.scanner.name == 'trivy'
+        run: |
+          mkdir -p $HOME/.cache/trivy
+      - name: Run Trivy (SARIF)
         if: matrix.scanner.name == 'trivy'
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.TARGET_IMAGE }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
+          format: sarif
+          output: trivy.sarif
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
+          ignore-unfixed: true
+          exit-code: '0'           # <-- do not fail CI on findings
+          timeout: '10m'
+          cache-dir: ${{ runner.temp }}/trivy-cache
         continue-on-error: true
 
-      - name: Upload SARIF file to GitHub Security
-        if: matrix.scanner.upload_sarif && always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: ${{ matrix.scanner.name == 'trivy' && 'trivy-results.sarif' || format('{0}-results.sarif', matrix.scanner.name) }}
-          category: ${{ matrix.scanner.name }}
-
-      - name: Generate SBOM
+      - name: Generate SBOM (SPDX JSON)
         if: matrix.scanner.name == 'trivy'
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.TARGET_IMAGE }}
-          format: 'spdx-json'
-          output: 'sbom-spdx.json'
+          format: spdx-json
+          output: sbom-spdx.json
+        continue-on-error: true
 
-      - name: Upload scan results
+      - name: Upload Trivy artifacts
+        if: matrix.scanner.name == 'trivy' && always()
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: ${{ matrix.scanner.name }}-results
+          name: trivy-results
           path: |
-            ${{ matrix.scanner.name }}*.sarif
-            ${{ matrix.scanner.name }}*.json
-            trivy-results.sarif
+            trivy.sarif
             sbom-spdx.json
           if-no-files-found: ignore
 
-  # Build and prepare deployment
+# =========================
+# 2) BUILD / VERIFY IMAGE
+# =========================
   build:
     name: Build & Prepare
     runs-on: ubuntu-latest
     needs: security-scans
     if: ${{ !cancelled() && (success() || needs.security-scans.result == 'failure') }}
     outputs:
-      image-tag: ${{ steps.meta.outputs.tags }}
-      image-digest: ${{ steps.build.outputs.digest }}
-      
+      image-digest: ${{ steps.inspect.outputs.digest }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.TARGET_IMAGE }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # For this example, we're just validating the target image exists
-      # In a real scenario, you'd build your own image here
       - name: Pull and verify target image
-        id: build
+        id: inspect
         run: |
-          docker pull ${{ env.TARGET_IMAGE }}
-          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${{ env.TARGET_IMAGE }} | cut -d'@' -f2)
-          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
-          echo "Successfully verified image: ${{ env.TARGET_IMAGE }}"
+          set -e
+          docker pull "${{ env.TARGET_IMAGE }}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "${{ env.TARGET_IMAGE }}" | cut -d'@' -f2)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Verified image ${{ env.TARGET_IMAGE }} @ $DIGEST"
 
-  # Infrastructure deployment
+# =========================
+# 3) DEPLOY INFRASTRUCTURE
+# =========================
   deploy:
     name: Deploy Infrastructure
     needs: [security-scans, build]
     runs-on: ubuntu-latest
     if: ${{ vars.AWS_ROLE_ARN != '' && vars.AWS_ACCOUNT_ID != '' && vars.AWS_REGION != '' && !cancelled() }}
-    environment: 
-      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}
-      url: ${{ steps.deploy.outputs.app_url }}
-    
     outputs:
       app_url: ${{ steps.deploy.outputs.app_url }}
-      alb_dns: ${{ steps.deploy.outputs.alb_dns }}
+      alb_dns: ${{ steps.tf_outputs.outputs.alb_dns }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: WhoAmI (AWS)
+        run: |
+          set -e
+          aws sts get-caller-identity
+          aws configure list
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -166,108 +186,95 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
+      - name: Terraform Version / Dir
+        run: |
+          terraform -version
+          echo "TF working dir: ${{ env.TF_DIR }}"
+
       - name: Terraform Format Check
         working-directory: ${{ env.TF_DIR }}
-        run: |
-          echo "Checking Terraform format..."
-          if ! terraform fmt -check -diff; then
-            echo "❌ Terraform files are not properly formatted."
-            echo "🔧 Auto-formatting files..."
-            terraform fmt -recursive
-            echo "✅ Files have been formatted. Please commit the changes."
-            # In a real scenario, you might want to fail here and require a new commit
-            # exit 1
-          else
-            echo "✅ All Terraform files are properly formatted."
-          fi
+        run: terraform fmt -check -diff
 
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
-        run: |
-          terraform init -input=false
-          
+        run: terraform init -input=false -no-color
+
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
         run: |
+          set -e
           WORKSPACE=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
-          terraform workspace select $WORKSPACE || terraform workspace new $WORKSPACE
-          terraform plan -input=false \
+          terraform workspace select "$WORKSPACE" || terraform workspace new "$WORKSPACE"
+          terraform plan -input=false -no-color \
             -var="region=${{ vars.AWS_REGION }}" \
             -var="image_uri=${{ env.TARGET_IMAGE }}" \
             -out=tfplan
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_DIR }}
-        run: terraform apply -input=false tfplan
+        run: terraform apply -input=false -no-color tfplan
 
       - name: Get infrastructure outputs
         id: tf_outputs
         working-directory: ${{ env.TF_DIR }}
         run: |
           ALB_DNS=$(terraform output -raw alb_dns_name 2>/dev/null || echo "")
-          if [[ -z "$ALB_DNS" ]]; then
+          if [ -z "$ALB_DNS" ]; then
             echo "Error: Could not retrieve ALB DNS name from Terraform outputs"
             exit 1
           fi
-          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
-          echo "app_url=http://$ALB_DNS" >> $GITHUB_OUTPUT
+          echo "alb_dns=$ALB_DNS" >> "$GITHUB_OUTPUT"
+          echo "app_url=http://$ALB_DNS" >> "$GITHUB_OUTPUT"
 
-      - name: Configure ECR and retag image
+      - name: Ensure ECR & push retagged image
         run: |
-          # Create ECR repository if it doesn't exist
-          aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" 2>/dev/null || \
+          set -e
+          aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" >/dev/null 2>&1 || \
             aws ecr create-repository --repository-name "$ECR_REPO_NAME" --image-scanning-configuration scanOnPush=true
 
-          # Login to ECR
-          aws ecr get-login-password --region ${{ vars.AWS_REGION }} | \
-            docker login --username AWS --password-stdin ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+          aws ecr get-login-password --region "${{ vars.AWS_REGION }}" \
+            | docker login --username AWS --password-stdin "${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
 
-          # Pull, tag, and push image
-          ECR_URI="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/$ECR_REPO_NAME:${{ github.sha }}"
-          docker pull ${{ env.TARGET_IMAGE }}
-          docker tag ${{ env.TARGET_IMAGE }} "$ECR_URI"
+          ECR_URI="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${ECR_REPO_NAME}:${{ github.sha }}"
+          docker pull "${{ env.TARGET_IMAGE }}"
+          docker tag  "${{ env.TARGET_IMAGE }}" "$ECR_URI"
           docker push "$ECR_URI"
-          echo "ECR_IMAGE=$ECR_URI" >> $GITHUB_ENV
+          echo "ECR_IMAGE=$ECR_URI" >> "$GITHUB_ENV"
 
       - name: Update ECS service with new image
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform apply -auto-approve -input=false \
+          set -e
+          terraform apply -auto-approve -input=false -no-color \
             -var="region=${{ vars.AWS_REGION }}" \
             -var="image_uri=$ECR_IMAGE"
 
-      - name: Wait for service to be stable
+      - name: Wait for service to be stable & reachable
         id: deploy
         run: |
-          echo "Waiting for ECS service to stabilize..."
-          # Add your ECS service name here
-          # aws ecs wait services-stable --cluster your-cluster --services your-service
-          
+          set -e
           ALB_DNS="${{ steps.tf_outputs.outputs.alb_dns }}"
-          APP_URL="http://$ALB_DNS"
-          
-          # Wait for ALB to respond (up to 5 minutes)
-          timeout 300 bash -c "
-            while ! curl -f -s --max-time 10 '$APP_URL' >/dev/null; do
-              echo 'Waiting for application to be available...'
-              sleep 15
+          APP_URL="http://${ALB_DNS}"
+          echo "Waiting for application at ${APP_URL} to respond…"
+          timeout 300 bash -c '
+            until curl -fsS --max-time 10 "'"$APP_URL"'"; do
+              echo "  still waiting..."
+              sleep 10
             done
-          " || {
-            echo "Application failed to become available within timeout"
-            exit 1
-          }
-          
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
-          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
-          echo "✅ Application deployed successfully at: $APP_URL"
+          '
+          echo "app_url=$APP_URL" >> "$GITHUB_OUTPUT"
+          echo "✅ Application deployed: $APP_URL"
 
-  # Security testing against live deployment
+# =========================
+# 4) ZAP BASELINE (DAST)
+# =========================
   security-testing:
-    name: Security Testing
+    name: Security Testing (ZAP baseline)
     needs: deploy
     runs-on: ubuntu-latest
-    if: ${{ needs.deploy.result == 'success' }}
-    
+    # run even if earlier scans had errors, as long as deploy succeeded
+    if: always() && needs.deploy.result == 'success'
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -276,7 +283,6 @@ jobs:
         uses: zaproxy/action-baseline@v0.12.0
         with:
           target: ${{ needs.deploy.outputs.app_url }}
-          rules_file_name: '.zap/rules.tsv'
           cmd_options: '-a'
         continue-on-error: true
 
@@ -287,50 +293,42 @@ jobs:
           name: zap-results
           path: report_*
 
-  # Rollback capability
+# =========================
+# 5) ROLLBACK (only if deploy failed)
+# =========================
   rollback:
     name: Rollback on Failure
-    needs: [deploy, security-testing]
+    needs: [deploy]
     runs-on: ubuntu-latest
-    if: ${{ failure() && needs.deploy.result == 'success' }}
-    
+    if: ${{ needs.deploy.result == 'failure' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
-
-      - name: Terraform Rollback
+      - name: Terraform Rollback (placeholder)
         working-directory: ${{ env.TF_DIR }}
         run: |
-          terraform init -input=false
+          terraform init -input=false -no-color
           WORKSPACE=${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
-          terraform workspace select $WORKSPACE
-          
-          echo "⚠️ Rolling back to previous stable state..."
-          # This would rollback to previous image or destroy resources
-          # terraform apply -auto-approve -var="image_uri=${{ env.TARGET_IMAGE }}"
-          
-          echo "🔄 Rollback completed"
+          terraform workspace select "$WORKSPACE"
+          echo "⚠️ Add rollback logic here (e.g., apply prior image tag)."
 
-  # Cleanup job
+# =========================
+# 6) CLEANUP
+# =========================
   cleanup:
     name: Cleanup
-    needs: [deploy, security-testing, rollback]
+    needs: [deploy, security-testing]
     runs-on: ubuntu-latest
     if: always()
-    
     steps:
       - name: Clean up temporary resources
-        run: |
-          echo "🧹 Cleaning up temporary resources..."
-          # Add cleanup logic here if needed
+        run: echo "🧹 Cleanup complete."
