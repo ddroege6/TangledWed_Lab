@@ -1,0 +1,63 @@
+name: Destroy AWS Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      workspace:
+        description: "Terraform workspace to destroy (dev or prod)"
+        required: true
+        default: "dev"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_DIR: infra
+  TERRAFORM_VERSION: 1.9.5
+  ECR_REPO_NAME: tangled-web-lab-dev-app
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    if: ${{ vars.AWS_ROLE_ARN != '' && vars.AWS_REGION != '' && vars.AWS_ACCOUNT_ID != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: GithubActions-Destroy-${{ github.run_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init / select workspace
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init -input=false
+          terraform workspace select "${{ github.event.inputs.workspace }}" || terraform workspace new "${{ github.event.inputs.workspace }}"
+
+      # Optional: empty ECR repository so destroy won't choke on "repository not empty"
+      - name: Empty ECR repository images (ignore if not found)
+        run: |
+          set -e
+          aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" >/dev/null 2>&1 || exit 0
+          IMG_IDS=$(aws ecr list-images --repository-name "$ECR_REPO_NAME" --query 'imageIds[*]' --output json)
+          if [ "$IMG_IDS" != "[]" ]; then
+            aws ecr batch-delete-image --repository-name "$ECR_REPO_NAME" --image-ids "$IMG_IDS" || true
+          fi
+
+      - name: Terraform destroy
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform destroy -auto-approve \
+            -var="region=${{ vars.AWS_REGION }}" \
+            -var="image_uri=bkimminich/juice-shop:latest"
