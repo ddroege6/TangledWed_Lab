@@ -2,12 +2,17 @@ resource "aws_security_group" "alb_sg" {
   name   = "${local.name}-alb-sg"
   vpc_id = aws_vpc.vpc.id
   ingress {
-  from_port   = 80
-  to_port     = 80
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
-}
-  egress  { from_port = 0   to_port = 0   protocol = "-1"  cidr_blocks = ["0.0.0.0/0"] }
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   tags = local.tags
 }
 
@@ -31,20 +36,26 @@ resource "aws_lb_target_group" "tg" {
 
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.alb.arn
-  port = 80
-  protocol = "HTTP"
-  default_action { type = "forward" target_group_arn = aws_lb_target_group.tg.arn }
+  port              = 80
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.tg.arn
+  }
 }
 
 resource "aws_cloudwatch_log_group" "app" {
-  name = "/ecs/${local.name}"
+  name              = "/ecs/${local.name}"
   retention_in_days = 14
-  tags = local.tags
+  tags              = local.tags
 }
 
 resource "aws_ecs_cluster" "cluster" {
   name = "${local.name}-cluster"
-  setting { name = "containerInsights" value = "enabled" }
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
   tags = local.tags
 }
 
@@ -58,22 +69,27 @@ resource "aws_security_group" "tasks_sg" {
     security_groups = [aws_security_group.alb_sg.id]
     description     = "ALB to tasks"
   }
-  egress { from_port = 0 to_port = 0 protocol = "-1" cidr_blocks = ["0.0.0.0/0"] }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   tags = local.tags
 }
 
 resource "aws_iam_role" "task_execution" {
   name = "${local.name}-task-exec"
   assume_role_policy = jsonencode({
-    Version="2012-10-17", Statement=[{Effect="Allow",Principal={Service="ecs-tasks.amazonaws.com"},Action="sts:AssumeRole"}]
+    Version = "2012-10-17", Statement = [{ Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" }, Action = "sts:AssumeRole" }]
   })
 }
 resource "aws_iam_role_policy_attachment" "exec_attach" {
-  role = aws_iam_role.task_execution.name
+  role       = aws_iam_role.task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 resource "aws_iam_role" "task_role" {
-  name = "${local.name}-task-role"
+  name               = "${local.name}-task-role"
   assume_role_policy = aws_iam_role.task_execution.assume_role_policy
 }
 
@@ -87,9 +103,9 @@ resource "aws_ecs_task_definition" "td" {
   task_role_arn            = aws_iam_role.task_role.arn
 
   container_definitions = jsonencode([{
-    name  = "app"
-    image = var.image_uri
-    essential = true
+    name         = "app"
+    image        = var.image_uri
+    essential    = true
     portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
     logConfiguration = {
       logDriver = "awslogs",
@@ -113,8 +129,8 @@ resource "aws_ecs_service" "svc" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets         = [aws_subnet.private_a.id, aws_subnet.private_b.id]
-    security_groups = [aws_security_group.tasks_sg.id]
+    subnets          = [aws_subnet.private_a.id, aws_subnet.private_b.id]
+    security_groups  = [aws_security_group.tasks_sg.id]
     assign_public_ip = false
   }
 
@@ -125,5 +141,5 @@ resource "aws_ecs_service" "svc" {
   }
 
   depends_on = [aws_lb_listener.http]
-  tags = local.tags
+  tags       = local.tags
 }
